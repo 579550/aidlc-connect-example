@@ -1,0 +1,115 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Simple Amazon Connect inbound flow - greeting, one-option DTMF menu to a queue, 2 retries then goodbye.
+
+Parameters:
+  InstanceArn:
+    Type: String
+    Description: ARN of the existing Amazon Connect instance.
+    AllowedPattern: ^arn:aws[a-z-]*:connect:[a-z0-9-]+:\d{12}:instance/[a-f0-9-]+$
+  QueueArn:
+    Type: String
+    Description: ARN of the existing queue (e.g. Support or BasicQueue) that option 1 transfers to.
+    AllowedPattern: ^arn:aws[a-z-]*:connect:[a-z0-9-]+:\d{12}:instance/[a-f0-9-]+/queue/[a-f0-9-]+$
+  FlowName:
+    Type: String
+    Default: simple-support-flow
+    Description: Name of the contact flow.
+
+Resources:
+  SimpleContactFlow:
+    Type: AWS::Connect::ContactFlow
+    Properties:
+      InstanceArn: !Ref InstanceArn
+      Name: !Ref FlowName
+      Type: CONTACT_FLOW
+      Description: PoC greeting and Support queue menu.
+      Content: !Sub |
+        {
+          "Version": "2019-10-30",
+          "StartAction": "greeting",
+          "Actions": [
+            {
+              "Identifier": "greeting",
+              "Type": "MessageParticipant",
+              "Parameters": { "Text": "Thank you for calling." },
+              "Transitions": { "NextAction": "retry-loop", "Errors": [ { "NextAction": "retry-loop", "ErrorType": "NoMatchingError" } ], "Conditions": [] }
+            },
+            {
+              "Identifier": "retry-loop",
+              "Type": "Loop",
+              "Parameters": { "LoopCount": "2" },
+              "Transitions": {
+                "NextAction": "goodbye",
+                "Errors": [],
+                "Conditions": [
+                  { "NextAction": "menu", "Condition": { "Operator": "Equals", "Operands": [ "ContinueLooping" ] } },
+                  { "NextAction": "goodbye", "Condition": { "Operator": "Equals", "Operands": [ "DoneLooping" ] } }
+                ]
+              }
+            },
+            {
+              "Identifier": "menu",
+              "Type": "GetParticipantInput",
+              "Parameters": {
+                "Text": "Press 1 to speak with support.",
+                "StoreInput": "False",
+                "InputTimeLimitSeconds": "5"
+              },
+              "Transitions": {
+                "NextAction": "retry-loop",
+                "Errors": [
+                  { "NextAction": "retry-loop", "ErrorType": "InputTimeLimitExceeded" },
+                  { "NextAction": "retry-loop", "ErrorType": "NoMatchingCondition" },
+                  { "NextAction": "retry-loop", "ErrorType": "NoMatchingError" }
+                ],
+                "Conditions": [
+                  { "NextAction": "set-queue", "Condition": { "Operator": "Equals", "Operands": [ "1" ] } }
+                ]
+              }
+            },
+            {
+              "Identifier": "set-queue",
+              "Type": "UpdateContactTargetQueue",
+              "Parameters": { "QueueId": "${QueueArn}" },
+              "Transitions": {
+                "NextAction": "transfer",
+                "Errors": [ { "NextAction": "goodbye", "ErrorType": "NoMatchingError" } ],
+                "Conditions": []
+              }
+            },
+            {
+              "Identifier": "transfer",
+              "Type": "TransferContactToQueue",
+              "Parameters": {},
+              "Transitions": {
+                "NextAction": "goodbye",
+                "Errors": [
+                  { "NextAction": "goodbye", "ErrorType": "QueueAtCapacity" },
+                  { "NextAction": "goodbye", "ErrorType": "NoMatchingError" }
+                ],
+                "Conditions": []
+              }
+            },
+            {
+              "Identifier": "goodbye",
+              "Type": "MessageParticipant",
+              "Parameters": { "Text": "We did not get a valid selection. Goodbye." },
+              "Transitions": {
+                "NextAction": "disconnect",
+                "Errors": [ { "NextAction": "disconnect", "ErrorType": "NoMatchingError" } ],
+                "Conditions": []
+              }
+            },
+            {
+              "Identifier": "disconnect",
+              "Type": "DisconnectParticipant",
+              "Parameters": {},
+              "Transitions": {}
+            }
+          ]
+        }
+
+Outputs:
+  ContactFlowArn:
+    Description: ARN of the deployed contact flow.
+    Value: !Ref SimpleContactFlow
